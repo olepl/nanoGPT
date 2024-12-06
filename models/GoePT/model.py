@@ -128,11 +128,26 @@ class GoePT():
 
 
     def backward(self, x):
-        raise NotImplementedError("Implement the nanoGPT backward path")
+        x = self.lm_head.backward(x)
+
+        x = self.transformer['ln_f'].backward(x)
+        for block in reversed(self.transformer['h']):
+            x = block.backward(x)
+        x = self.transformer['drop'].backward(x)
+
+        self.transformer['wte'].backward(x)
+        self.transformer['wpe'].backward(x)
 
 
     def update(self):
-        raise NotImplementedError("Implement the nanoGPT update")
+        self.transformer['wte'].update()
+        self.transformer['wpe'].update()
+
+        for block in self.transformer['h']:
+            block.update()
+        self.transformer['ln_f'].update()
+
+        self.lm_head.update()
 
     def state_dict(self):
 

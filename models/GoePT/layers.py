@@ -12,7 +12,8 @@
 import sys
 import math
 import copy
-from types import NoneType
+#from types import NoneType
+NoneType = type(None)
 from typing import Union, Callable
 
 
@@ -232,9 +233,10 @@ class Dropout():
 
         return input*self.mask
 
-    def backward(self, grad):
-        raise NotImplementedError("Implement the Dropout backward path")
-        return grad_out
+    def backward(self, grad_output):
+        grad_output = np.asanyarray(grad_output)
+        grad_input = grad_output*self.mask
+        return grad_input
 
 def one_hot(a, num_classes):
     return np.squeeze(np.eye(num_classes)[a.reshape(-1)])
@@ -300,7 +302,8 @@ class LayerNorm():
 
 
     def update(self):
-        raise NotImplementedError("Implement the LayerNorm update routine")
+        self.weight = self.weight - self.lr*self.grad_weight
+        self.bias = self.bias - self.lr*self.grad_bias
 
 
 class GELU():
@@ -358,11 +361,15 @@ class MLP():
         return x
 
     def backward(self, x: np.ndarray) -> np.ndarray:
-        raise NotImplementedError("Implement the MLP backward path")
+        x = self.dropout.backward(x)
+        x = self.c_proj.backward(x)
+        x = self.gelu.backward(x)
+        x = self.c_fc.backward(x)
         return x
 
     def update(self) -> None:
-        raise NotImplementedError("Implement the MLP update")
+        self.c_fc.update()
+        self.c_proj.update()
 
 
     def get_params(self) -> dict:
@@ -459,13 +466,21 @@ class MultiHeadAttention():
         return x, attn
 
 
-    def backward(self, grad: ArrayLike) -> np.ndarray:
-        raise NotImplementedError("Implement the MultiHeadAttention backward path")
-        return grad_downstream
+    def backward(self, x: ArrayLike) -> np.ndarray:
+        x = self.resid_dropout.backward(x)
+        x = self.c_proj.backward(x)
+
+        # TODO: Attention backward
+        raise NotImplementedError("Finish implementing MultiHeadAttention backward")
+
+        x = self.attn_dropout.backward(x)
+        x = self.c_attn.backward(x)
+        return x
 
 
     def update(self) -> None:
-        raise NotImplementedError("Implement the MultiHeadAttention update")
+        self.c_attn.update()
+        self.c_proj.update()
 
 
     def get_params(self) -> dict:
@@ -524,11 +539,11 @@ class Embedding():
 
 
     def backward(self, grad_output: ArrayLike) -> np.ndarray:
-        raise NotImplementedError("Implement the Embedding backward path")
+        self.grad_weight = self.input*grad_output
 
 
     def update(self):
-        raise NotImplementedError("Implement the Embedding update")
+        self.weight = self.weight - self.lr*self.grad_weight
 
 
 class Block():
@@ -594,13 +609,28 @@ class Block():
         return x
 
 
-    def backward(self, grad_output: ArrayLike) -> np.ndarray:
-        raise NotImplementedError("Implement the Block backward path")
-        return grad
+    def backward(self, x: ArrayLike) -> np.ndarray:
+        #TODO: Is this correct?
+        residual = copy.deepcopy(x)
+
+        x = self.mlp.backward(x)
+        x = self.ln_2.backward(x)
+
+        x = x + residual
+
+        residual = copy.deepcopy(x)
+
+        x = self.attn.backward(x)
+        x = self.ln_1.backward(x)
+
+        return x
 
 
     def update(self) -> None:
-        raise NotImplementedError("Implement the Block update")
+        self.ln_1.update()
+        self.attn.update()
+        self.ln_2.update()
+        self.mlp.update()
 
 
     def state_dict(self) -> dict:
