@@ -327,9 +327,11 @@ class GELU():
         return (0.5*input*(1 + np.tanh(self._sqrt_of_2_by_pi*(input + 0.044715*np.power(input, 3)))))
 
 
-    def backward(self, grad_output: ArrayLike) -> np.ndarray:
-        raise NotImplementedError("Implement the GELU backward path")
-        return grad_out
+    def backward(self, grad_out: ArrayLike) -> np.ndarray:
+        
+        grad_in = grad_out * (0.5*np.tanh(0.0356774 * x ** 3 + 0.797885 * x) + (0.0535161* x ** 3 + 0.398942 * x) / np.cosh(0.0356774 * x ** 3 + 0.797885 * x) ** 2 + 0.5)
+
+        return grad_in
 
 
 class MLP():
