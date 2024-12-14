@@ -296,9 +296,19 @@ class LayerNorm():
         return self.weight*output + self.bias
 
 
-    def backward(self, grad: ArrayLike) -> np.ndarray:
-        raise NotImplementedError("Implement the LayerNorm backward path")
-        return grad_out
+    def backward(self, grad_output: ArrayLike) -> np.ndarray:
+        self.grad_weight = (1. /self.batch_size)*self.x_centered*self.stddev_inv*grad_output
+        self.grad_bias = (1. /self.batch_size)*grad_output.sum(0)
+
+        grad_xhat = grad_output*self.weight
+
+        grad_mean = grad_xhat.sum(1)
+        grad_stddev_inv = -0.5 * self.stddev_inv ** 3 * (grad_xhat * self.x_centered).sum(1)
+        grad_var = 2 * grad_stddev_inv * self.x_centered
+
+        grad_input = grad_xhat * self.stddev_inv + grad_var
+
+        return grad_input
 
 
     def update(self):
@@ -466,16 +476,25 @@ class MultiHeadAttention():
         return x, attn
 
 
-    def backward(self, x: ArrayLike) -> np.ndarray:
-        x = self.resid_dropout.backward(x)
-        x = self.c_proj.backward(x)
+    def backward(self, grad_out: ArrayLike) -> np.ndarray:
+        grad_out = self.resid_dropout.backward(grad_out)
+        grad_out = self.c_proj.backward(grad_out)
 
-        # TODO: Attention backward
-        raise NotImplementedError("Finish implementing MultiHeadAttention backward")
+        grad_v = grad_out @ self.attn
+        grad_attn = grad_out @ self.v
 
-        x = self.attn_dropout.backward(x)
-        x = self.c_attn.backward(x)
-        return x
+        grad_attn = self.attn_dropout.backward(grad_attn)
+        grad_attn = self.softmax_attn.backward(grad_attn)
+        grad_attn = grad_attn * self.mask
+        
+        grad_attn = grad_attn * (1.0/math.sqrt(k.shape[-1]))
+        grad_k = self.q @ grad_attn
+        grad_q = grad_attn @ self.k.transpose(0, 1, 3, 2)
+
+        grad_c_attn = np.concatenate((grad_q, grad_k, grad_v), axis=2)
+        grad_input = self.c_attn.backward(grad_c_attn)
+
+        return grad_input
 
 
     def update(self) -> None:
