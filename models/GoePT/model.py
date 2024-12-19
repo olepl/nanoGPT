@@ -127,16 +127,16 @@ class GoePT():
         return logits, loss
 
 
-    def backward(self, x):
-        x = self.lm_head.backward(x)
+    def backward(self, grad):
+        grad = self.lm_head.backward(grad)
 
-        x = self.transformer['ln_f'].backward(x)
+        grad = self.transformer['ln_f'].backward(grad)
         for block in reversed(self.transformer['h']):
-            x = block.backward(x)
-        x = self.transformer['drop'].backward(x)
+            grad = block.backward(grad)
+        grad = self.transformer['drop'].backward(grad)
 
-        self.transformer['wte'].backward(x)
-        self.transformer['wpe'].backward(x)
+        self.transformer['wte'].backward(grad)
+        self.transformer['wpe'].backward(grad.sum(axis=0))
 
 
     def update(self):

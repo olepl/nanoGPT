@@ -199,11 +199,11 @@ class Softmax():
         self.output = output
         return output
 
-    def backward(self, grad: ArrayLike):
-        grad = np.asanyarray(grad)
+    def backward(self, grad_output: ArrayLike):
+        grad_output = np.asanyarray(grad_output)
         f_x = self.output
-        grad = (grad - (grad * f_x).sum(self.axis, keepdims=True)) * f_x
-        return grad
+        grad_input = (grad_output - (grad_output * f_x).sum(self.axis, keepdims=True)) * f_x
+        return grad_input
 
 
 class Dropout():
@@ -285,11 +285,11 @@ class LayerNorm():
 
         self.axis = tuple(range(-len(self.normalized_shape), 0))
 
-        mean = np.mean(input, axis=self.axis, keepdims=True)
-        var = np.var(input, axis=self.axis, keepdims=True)
+        self.mean = np.mean(input, axis=self.axis, keepdims=True)
+        self.var = np.var(input, axis=self.axis, keepdims=True)
 
-        self.x_centered = input - mean
-        self.stddev_inv = 1/np.sqrt(var + self.eps)
+        self.x_centered = input - self.mean
+        self.stddev_inv = 1/np.sqrt(self.var + self.eps)
 
         output = self.x_centered*self.stddev_inv
 
@@ -297,16 +297,15 @@ class LayerNorm():
 
 
     def backward(self, grad_output: ArrayLike) -> np.ndarray:
-        self.grad_weight = (1. /self.batch_size)*self.x_centered*self.stddev_inv*grad_output
-        self.grad_bias = (1. /self.batch_size)*grad_output.sum(0)
+        self.grad_weight = self.x_centered*self.stddev_inv*grad_output
+        self.grad_bias = grad_output
 
-        grad_xhat = grad_output*self.weight
+        s1 = (grad_output * self.input * self.weight).sum(2, keepdims=True)
+        grad_x_hat = (grad_output * self.weight).sum(2, keepdims=True)
+        lambd = grad_x_hat * self.mean - s1 * (1. / self.stddev_inv) ** 3 * (1. / self.normalized_shape[0])
+        theta = -lambd * self.mean - grad_x_hat * (1. / self.stddev_inv) * (1. / self.normalized_shape[0])
 
-        grad_mean = grad_xhat.sum(1)
-        grad_stddev_inv = -0.5 * self.stddev_inv ** 3 * (grad_xhat * self.x_centered).sum(1)
-        grad_var = 2 * grad_stddev_inv * self.x_centered
-
-        grad_input = grad_xhat * self.stddev_inv + grad_var
+        grad_input = (1. / self.stddev_inv) * grad_output * self.weight + lambd * self.input + theta
 
         return grad_input
 
@@ -327,11 +326,11 @@ class GELU():
         return (0.5*input*(1 + np.tanh(self._sqrt_of_2_by_pi*(input + 0.044715*np.power(input, 3)))))
 
 
-    def backward(self, grad_out: ArrayLike) -> np.ndarray:
+    def backward(self, grad_output: ArrayLike) -> np.ndarray:
         
-        grad_in = grad_out * (0.5*np.tanh(0.0356774 * x ** 3 + 0.797885 * x) + (0.0535161* x ** 3 + 0.398942 * x) / np.cosh(0.0356774 * x ** 3 + 0.797885 * x) ** 2 + 0.5)
+        grad_input = grad_output * (0.5*np.tanh(0.0356774 * self.input ** 3 + 0.797885 * self.input) + (0.0535161* self.input ** 3 + 0.398942 * self.input) / np.cosh(0.0356774 * self.input ** 3 + 0.797885 * self.input) ** 2 + 0.5)
 
-        return grad_in
+        return grad_input
 
 
 class MLP():
@@ -372,12 +371,15 @@ class MLP():
         x = self.dropout.forward(x)
         return x
 
-    def backward(self, x: np.ndarray) -> np.ndarray:
-        x = self.dropout.backward(x)
-        x = self.c_proj.backward(x)
-        x = self.gelu.backward(x)
-        x = self.c_fc.backward(x)
-        return x
+    def backward(self, grad_output: np.ndarray) -> np.ndarray:
+        grad = grad_output
+        grad = self.dropout.backward(grad)
+        grad = self.c_proj.backward(grad)
+        grad = self.gelu.backward(grad)
+        grad = self.c_fc.backward(grad)
+
+        grad_input = grad
+        return grad_input
 
     def update(self) -> None:
         self.c_fc.update()
@@ -478,20 +480,26 @@ class MultiHeadAttention():
         return x, attn
 
 
-    def backward(self, grad_out: ArrayLike) -> np.ndarray:
-        grad_out = self.resid_dropout.backward(grad_out)
-        grad_out = self.c_proj.backward(grad_out)
+    def backward(self, grad_output: ArrayLike) -> np.ndarray:
+        grad_output = self.resid_dropout.backward(grad_output)
+        grad_output = self.c_proj.backward(grad_output)
+        grad_output = np.ascontiguousarray(grad_output).reshape(self.batch_size, -1, self.n_heads, self.depth).transpose(0, 2, 1, 3)
 
-        grad_v = grad_out @ self.attn
-        grad_attn = grad_out @ self.v
+        grad_v = self.attn @ grad_output
+        grad_attn = grad_output @ self.v.transpose(0, 1, 3, 2)
 
         grad_attn = self.attn_dropout.backward(grad_attn)
         grad_attn = self.softmax_attn.backward(grad_attn)
         grad_attn = grad_attn * self.mask
         
-        grad_attn = grad_attn * (1.0/math.sqrt(k.shape[-1]))
-        grad_k = self.q @ grad_attn
-        grad_q = grad_attn @ self.k.transpose(0, 1, 3, 2)
+        grad_attn = grad_attn * (1.0/math.sqrt(self.k.shape[-1]))
+
+        grad_k = grad_attn @ self.q
+        grad_q = grad_attn @ self.k
+
+        grad_k = grad_k.transpose(0, 2, 1, 3).reshape(self.input.shape)
+        grad_q = grad_q.transpose(0, 2, 1, 3).reshape(self.input.shape)
+        grad_v = grad_v.transpose(0, 2, 1, 3).reshape(self.input.shape)
 
         grad_c_attn = np.concatenate((grad_q, grad_k, grad_v), axis=2)
         grad_input = self.c_attn.backward(grad_c_attn)
@@ -556,11 +564,18 @@ class Embedding():
 
     def forward(self, input: ArrayLike) -> np.ndarray:
         self.input = np.asanyarray(input)
-        return self.weight[self.input.astype(np.int32), :]
+        output = self.weight[self.input.astype(np.int32), :]
+
+        return output
 
 
     def backward(self, grad_output: ArrayLike) -> np.ndarray:
-        self.grad_weight = self.input*grad_output
+        self.grad_weight = np.zeros_like(self.weight)
+
+        flatten_input = self.input.flatten()
+        flatten_grad_output = grad_output.reshape(-1, grad_output.shape[-1])
+
+        np.add.at(self.grad_weight, flatten_input, flatten_grad_output)
 
 
     def update(self):
@@ -630,21 +645,23 @@ class Block():
         return x
 
 
-    def backward(self, x: ArrayLike) -> np.ndarray:
+    def backward(self, grad_output: ArrayLike) -> np.ndarray:
         #TODO: Is this correct?
-        residual = copy.deepcopy(x)
+        grad = grad_output
+        residual = copy.deepcopy(grad)
 
-        x = self.mlp.backward(x)
-        x = self.ln_2.backward(x)
+        grad = self.mlp.backward(grad)
+        grad = self.ln_2.backward(grad)
 
-        x = x + residual
+        grad = grad + residual
 
-        residual = copy.deepcopy(x)
+        residual = copy.deepcopy(grad)
 
-        x = self.attn.backward(x)
-        x = self.ln_1.backward(x)
+        grad = self.attn.backward(grad)
+        grad = self.ln_1.backward(grad)
 
-        return x
+        grad_input = grad
+        return grad_input
 
 
     def update(self) -> None:
