@@ -18,6 +18,7 @@ from typing import Union, Callable
 
 
 import numpy as np
+import scipy
 from numpy.typing import ArrayLike
 from icecream import ic
 
@@ -317,20 +318,17 @@ class LayerNorm():
 
 class GELU():
     def __init__(self) -> None:
-        self._sqrt_of_2_by_pi = np.sqrt(2/np.pi)
         self.input = None
-
 
     def forward(self, input: ArrayLike) -> np.ndarray:
         self.input = np.asanyarray(input)
-        return (0.5*input*(1 + np.tanh(self._sqrt_of_2_by_pi*(input + 0.044715*np.power(input, 3)))))
+        self.cdf = 0.5 * (1 + scipy.special.erf(self.input / 2.0**0.5))
 
+        return self.input * self.cdf
 
     def backward(self, grad_output: ArrayLike) -> np.ndarray:
-        
-        grad_input = grad_output * (0.5*np.tanh(0.0356774 * self.input ** 3 + 0.797885 * self.input) + (0.0535161* self.input ** 3 + 0.398942 * self.input) / np.cosh(0.0356774 * self.input ** 3 + 0.797885 * self.input) ** 2 + 0.5)
-
-        return grad_input
+        pdf = scipy.stats.norm.pdf(self.input)
+        return grad_output * (self.cdf + self.input * pdf)
 
 
 class MLP():
