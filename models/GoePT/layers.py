@@ -461,7 +461,11 @@ class MultiHeadAttention():
         self.q = q
         self.v = v
 
-        attn = (q @ k.transpose(0, 1, 3, 2))*(1.0/math.sqrt(k.shape[-1]))
+        #for i in range(L):
+        #    for j in range(L):
+        #        R[i, j] = embedding[i-j]
+
+        attn = (q @ k.transpose(0, 1, 3, 2))*(1.0/math.sqrt(k.shape[-1])) #+ q @ R
 
         attn = np.where(self.mask == 0, -1e9, attn)
         attn = self.softmax_attn.forward(attn)
